@@ -1,40 +1,6 @@
 import json
-import os
-
-import google.generativeai as genai
-
-from dotenv import load_dotenv
-
+from llm import generate_text
 from database import get_connection
-
-
-# -----------------------------
-# GEMINI SETUP
-# -----------------------------
-
-load_dotenv()
-
-genai.configure(
-    api_key=os.getenv("GOOGLE_API_KEY")
-)
-
-model = genai.GenerativeModel(
-    "models/gemini-2.5-flash"
-)
-
-
-# -----------------------------
-# HELPERS
-# -----------------------------
-
-def clean_json_response(text):
-
-    text = text.strip()
-
-    text = text.replace("```json", "")
-    text = text.replace("```", "")
-
-    return text.strip()
 
 
 # -----------------------------
@@ -44,20 +10,19 @@ def clean_json_response(text):
 def get_weakest_concept():
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
     SELECT concept_name, mastery_score
     FROM concept_mastery
     ORDER BY mastery_score ASC
     LIMIT 1
     """)
 
-    result = cursor.fetchone()
-
+    row = cur.fetchone()
     conn.close()
 
-    return result
+    return row
 
 
 # -----------------------------
@@ -67,21 +32,17 @@ def get_weakest_concept():
 def generate_question(concept):
 
     prompt = f"""
-    Create ONE neuroscience retrieval question.
+Create ONE neuroscience retrieval question.
 
-    Concept:
-    {concept}
+Concept: {concept}
 
-    Requirements:
-    - concise
-    - conceptual
-    - reasoning-focused
-    - avoid trivia
-    """
+Rules:
+- conceptual
+- requires reasoning
+- no trivia
+"""
 
-    response = model.generate_content(prompt)
-
-    return response.text
+    return generate_text(prompt)
 
 
 # -----------------------------
@@ -91,43 +52,28 @@ def generate_question(concept):
 def evaluate_answer(question, answer):
 
     prompt = f"""
-    Evaluate this neuroscience answer.
+Evaluate neuroscience answer.
 
-    QUESTION:
-    {question}
+Return ONLY JSON:
 
-    USER ANSWER:
-    {answer}
+{{
+  "score": 0.0,
+  "feedback": "string",
+  "misconceptions": ["string"]
+}}
 
-    Return ONLY valid JSON.
+Question:
+{question}
 
-    Format:
+Answer:
+{answer}
+"""
 
-    {{
-      "score": 0.0,
-      "feedback": "...",
-      "misconceptions": [
-        "..."
-      ]
-    }}
-    """
-
-    response = model.generate_content(prompt)
-
-    raw_output = clean_json_response(
-        response.text
-    )
+    raw = generate_text(prompt)
 
     try:
-
-        parsed = json.loads(raw_output)
-
-        return parsed
-
-    except Exception as e:
-
-        print("Evaluation parse error:", e)
-
+        return json.loads(raw.strip())
+    except:
         return {
             "score": 0.0,
             "feedback": "Could not evaluate answer.",

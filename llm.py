@@ -1,21 +1,16 @@
-from google import genai
-from google.genai import types
 import os
+from google import genai
 
 client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
+    api_key=os.getenv("GOOGLE_API_KEY")
 )
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL = "gemini-2.5-flash"
 
-def generate_text(prompt):
 
+def generate_text(prompt: str) -> str:
     response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.3
-        )
+        model=MODEL,
+        contents=prompt
     )
-
-    return response.text
+    return response.text or ""

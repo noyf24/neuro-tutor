@@ -1,31 +1,129 @@
 import streamlit as st
-import google.generativeai as genai
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+
+from database import init_db
+from llm import generate_text
+
+from memory import (
+    extract_concepts,
+    save_concepts,
+    get_learning_context,
+    update_mastery
+)
+
+from quiz import (
+    get_weakest_concept,
+    generate_question,
+    evaluate_answer
+)
+
+
+# -----------------------------
+# INIT
+# -----------------------------
 
 load_dotenv()
+init_db()
 
-# genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+st.title("🧠 Neuroscience Tutor")
 
 
-model = genai.GenerativeModel("models/gemini-2.5-flash")
+# -----------------------------
+# SESSION STATE
+# -----------------------------
 
-st.title("Neuroscience Tutor")
+if "current_q" not in st.session_state:
+    st.session_state.current_q = None
 
-user_input = st.text_input("Ask a neuroscience question:")
+if "current_c" not in st.session_state:
+    st.session_state.current_c = None
+
+
+# -----------------------------
+# SIDEBAR QUIZ
+# -----------------------------
+
+with st.sidebar:
+
+    st.header("Quiz Mode")
+
+    if st.button("Quiz Me"):
+
+        weak = get_weakest_concept()
+
+        if weak:
+            concept, _ = weak
+
+            q = generate_question(concept)
+
+            st.session_state.current_q = q
+            st.session_state.current_c = concept
+
+        else:
+            st.warning("No data yet.")
+
+
+# -----------------------------
+# QUIZ UI
+# -----------------------------
+
+if st.session_state.current_q:
+
+    st.subheader("Quiz Question")
+    st.write(st.session_state.current_q)
+
+    ans = st.text_input("Your answer")
+
+    if st.button("Submit"):
+
+        result = evaluate_answer(
+            st.session_state.current_q,
+            ans
+        )
+
+        st.write(result["feedback"])
+
+        for m in result.get("misconceptions", []):
+            st.write("•", m)
+
+        update_mastery(
+            st.session_state.current_c,
+            result["score"]
+        )
+
+        st.success("Updated mastery!")
+
+        st.session_state.current_q = None
+        st.session_state.current_c = None
+
+
+# -----------------------------
+# CHAT INPUT
+# -----------------------------
+
+user_input = st.chat_input("Ask neuroscience...")
 
 if user_input:
-    response = model.generate_content(
-        f"""
-        You are a neuroscience tutor.
-        Explain clearly and simply.
-        Ask follow-up questions to check understanding.
 
-        User question:
-        {user_input}
-        """
-    )
+    st.chat_message("user").write(user_input)
 
-    st.write(response.text)
+    context = get_learning_context()
+
+    prompt = f"""
+You are a neuroscience tutor.
+
+Use this learner profile:
+
+{context}
+
+User question:
+{user_input}
+"""
+
+    response = generate_text(prompt)
+
+    st.chat_message("assistant").write(response)
+
+    data = extract_concepts(user_input, response)
+    save_concepts(data["concepts"])

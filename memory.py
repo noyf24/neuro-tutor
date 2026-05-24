@@ -1,198 +1,135 @@
 import json
-import os
-
-import google.generativeai as genai
-
-from dotenv import load_dotenv
-
 from database import get_connection
+from llm import generate_text
 
 
 # -----------------------------
-# GEMINI SETUP
+# CLEAN JSON HELPER
 # -----------------------------
 
-load_dotenv()
-
-genai.configure(
-    api_key=os.getenv("GOOGLE_API_KEY")
-)
-
-model = genai.GenerativeModel(
-    "models/gemini-2.5-flash"
-)
-
-
-# -----------------------------
-# HELPERS
-# -----------------------------
-
-def clean_json_response(text):
-
+def clean_json(text: str) -> str:
     text = text.strip()
-
     text = text.replace("```json", "")
     text = text.replace("```", "")
-
     return text.strip()
 
 
 # -----------------------------
-# CONCEPT EXTRACTION
+# EXTRACT CONCEPTS
 # -----------------------------
 
 def extract_concepts(user_message, assistant_response):
 
     prompt = f"""
-    Extract neuroscience concepts discussed.
+Extract neuroscience concepts.
 
-    Return ONLY valid JSON.
+Return ONLY valid JSON:
 
-    Format:
-
+{{
+  "concepts": [
     {{
-      "concepts": [
-        {{
-          "name": "...",
-          "understanding": 0.0,
-          "notes": "..."
-        }}
-      ]
+      "name": "string",
+      "understanding": 0.0,
+      "notes": "string"
     }}
+  ]
+}}
 
-    USER MESSAGE:
-    {user_message}
+User:
+{user_message}
 
-    ASSISTANT RESPONSE:
-    {assistant_response}
-    """
+Assistant:
+{assistant_response}
+"""
 
-    response = model.generate_content(prompt)
-
-    raw_output = clean_json_response(
-        response.text
-    )
+    raw = generate_text(prompt)
+    raw = clean_json(raw)
 
     try:
-
-        parsed = json.loads(raw_output)
-
-        return parsed
-
-    except Exception as e:
-
-        print("JSON parse error:", e)
-
-        return {
-            "concepts": []
-        }
+        return json.loads(raw)
+    except:
+        return {"concepts": []}
 
 
 # -----------------------------
-# SAVE CONCEPTS
+# SAVE / UPDATE CONCEPTS
 # -----------------------------
 
 def save_concepts(concepts):
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    for concept in concepts:
+    for c in concepts:
 
-        cursor.execute("""
+        cur.execute("""
         SELECT id, mastery_score
         FROM concept_mastery
         WHERE concept_name = ?
-        """, (concept["name"],))
+        """, (c["name"],))
 
-        existing = cursor.fetchone()
+        row = cur.fetchone()
 
-        if existing:
+        if row:
 
-            concept_id, old_score = existing
+            cid, old = row
 
-            new_score = (
-                old_score * 0.7 +
-                concept["understanding"] * 0.3
-            )
+            new_score = old * 0.7 + c["understanding"] * 0.3
 
-            cursor.execute("""
+            cur.execute("""
             UPDATE concept_mastery
             SET mastery_score = ?,
                 notes = ?,
                 last_reviewed = datetime('now')
             WHERE id = ?
-            """, (
-                new_score,
-                concept["notes"],
-                concept_id
-            ))
+            """, (new_score, c["notes"], cid))
 
         else:
 
-            cursor.execute("""
-            INSERT INTO concept_mastery (
-                concept_name,
-                mastery_score,
-                last_reviewed,
-                times_quizzed,
-                times_correct,
-                notes
-            )
+            cur.execute("""
+            INSERT INTO concept_mastery
+            (concept_name, mastery_score, last_reviewed, times_quizzed, times_correct, notes)
             VALUES (?, ?, datetime('now'), 0, 0, ?)
-            """, (
-                concept["name"],
-                concept["understanding"],
-                concept["notes"]
-            ))
+            """, (c["name"], c["understanding"], c["notes"]))
 
     conn.commit()
     conn.close()
 
 
 # -----------------------------
-# UPDATE MASTERY
+# UPDATE MASTERY AFTER QUIZ
 # -----------------------------
 
-def update_mastery(concept_name, quiz_score):
+def update_mastery(concept_name, score):
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
-    SELECT mastery_score,
-           times_quizzed,
-           times_correct
+    cur.execute("""
+    SELECT mastery_score, times_quizzed, times_correct
     FROM concept_mastery
     WHERE concept_name = ?
     """, (concept_name,))
 
-    row = cursor.fetchone()
+    row = cur.fetchone()
 
-    if row:
+    if not row:
+        conn.close()
+        return
 
-        old_score, times_q, times_correct = row
+    old, tq, tc = row
 
-        new_score = (
-            old_score * 0.8 +
-            quiz_score * 0.2
-        )
+    new_score = old * 0.8 + score * 0.2
+    correct = 1 if score > 0.7 else 0
 
-        correct = 1 if quiz_score > 0.7 else 0
-
-        cursor.execute("""
-        UPDATE concept_mastery
-        SET mastery_score = ?,
-            times_quizzed = ?,
-            times_correct = ?,
-            last_reviewed = datetime('now')
-        WHERE concept_name = ?
-        """, (
-            new_score,
-            times_q + 1,
-            times_correct + correct,
-            concept_name
-        ))
+    cur.execute("""
+    UPDATE concept_mastery
+    SET mastery_score = ?,
+        times_quizzed = ?,
+        times_correct = ?,
+        last_reviewed = datetime('now')
+    WHERE concept_name = ?
+    """, (new_score, tq + 1, tc + correct, concept_name))
 
     conn.commit()
     conn.close()
@@ -205,33 +142,28 @@ def update_mastery(concept_name, quiz_score):
 def get_learning_context():
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
-    SELECT concept_name,
-           mastery_score,
-           notes
+    cur.execute("""
+    SELECT concept_name, mastery_score, notes
     FROM concept_mastery
     ORDER BY mastery_score ASC
     LIMIT 5
     """)
 
-    rows = cursor.fetchall()
-
+    rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return "No prior learning data."
+        return "No learning history yet."
 
-    context = "User learning profile:\n\n"
+    text = "USER LEARNING PROFILE:\n\n"
 
-    for row in rows:
+    for r in rows:
+        text += f"""
+Concept: {r[0]}
+Mastery: {round(r[1], 2)}
+Notes: {r[2]}
+"""
 
-        context += f"""
-        Concept: {row[0]}
-        Mastery Score: {round(row[1], 2)}
-        Notes: {row[2]}
-
-        """
-
-    return context
+    return text
